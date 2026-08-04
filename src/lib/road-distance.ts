@@ -1,10 +1,15 @@
+import { createTTLCache } from "./cache";
+
 const ENDPOINT = `${import.meta.env.BASE_URL}api/road-distance`.replace(/\/+/g, "/");
 
-const STORAGE_PREFIX = "ddata.roadDist.v3.";
 const STORAGE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 const memCache = new Map<string, unknown>();
 const inflight = new Map<string, Promise<unknown>>();
+const storageCache = createTTLCache<unknown>({
+  ttlMs: STORAGE_TTL_MS,
+  prefix: "ddata.roadDist.v3.",
+});
 
 function round6(n: number): string {
   return n.toFixed(6);
@@ -14,36 +19,10 @@ function coordKey(coords: ReadonlyArray<readonly [number, number]>): string {
   return coords.map(([lng, lat]) => `${round6(lng)},${round6(lat)}`).join(";");
 }
 
-type Stored<T> = { value: T; expiresAt: number };
-
-function readStorage<T>(key: string): T | null {
-  try {
-    const raw = localStorage.getItem(STORAGE_PREFIX + key);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as Stored<T>;
-    if (parsed.expiresAt < Date.now()) {
-      localStorage.removeItem(STORAGE_PREFIX + key);
-      return null;
-    }
-    return parsed.value;
-  } catch {
-    return null;
-  }
-}
-
-function writeStorage<T>(key: string, value: T): void {
-  try {
-    const payload: Stored<T> = { value, expiresAt: Date.now() + STORAGE_TTL_MS };
-    localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(payload));
-  } catch {
-    /* ignore quota errors */
-  }
-}
-
 async function postJson<T>(body: unknown, cacheKey: string): Promise<T> {
   if (memCache.has(cacheKey)) return memCache.get(cacheKey) as T;
-  const stored = readStorage<T>(cacheKey);
-  if (stored) {
+  const stored = storageCache.get(cacheKey) as T | undefined;
+  if (stored !== undefined) {
     memCache.set(cacheKey, stored);
     return stored;
   }
@@ -61,7 +40,7 @@ async function postJson<T>(body: unknown, cacheKey: string): Promise<T> {
     }
     const data = (await res.json()) as T;
     memCache.set(cacheKey, data);
-    writeStorage(cacheKey, data);
+    storageCache.set(cacheKey, data);
     return data;
   })();
 
